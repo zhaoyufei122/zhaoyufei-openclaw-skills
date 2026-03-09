@@ -1,0 +1,26 @@
+{
+  "name": "mail-monitor",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "read:163": "node scripts/read-imap.js 163",
+    "read:163-secondary": "node scripts/read-imap.js 163-secondary",
+    "read:gmail": "node scripts/read-imap.js gmail",
+    "search:163": "node scripts/search-imap.js 163",
+    "search:163-secondary": "node scripts/search-imap.js 163-secondary",
+    "search:gmail": "node scripts/search-imap.js gmail",
+    "markread:163": "node scripts/mark-read-imap.js 163",
+    "markread:163-secondary": "node scripts/mark-read-imap.js 163-secondary",
+    "markread:gmail": "node scripts/mark-read-imap.js gmail",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "imapflow": "^1.2.12",
+    "mailparser": "^3.9.3"
+  }
+}
