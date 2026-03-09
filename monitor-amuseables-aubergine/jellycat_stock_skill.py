@@ -12,7 +12,11 @@ from bs4 import BeautifulSoup
 
 
 DEFAULT_URL = "https://jellycat.com/vivacious-vegetable-aubergine/"
-DEFAULT_STATE_FILE = ".jellycat_aubergine_state.json"
+DEFAULT_STATE_FILE = ".amuseables_aubergine_state.json"
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+)
 
 
 @dataclass
@@ -22,6 +26,7 @@ class StockSnapshot:
     page_in_stock: bool | None
     small_in_stock: bool | None
     large_in_stock: bool | None
+    blocked: bool
     raw_labels: list[str]
 
 
@@ -48,6 +53,18 @@ def parse_bool_from_text(value: str) -> bool | None:
     return None
 
 
+def is_challenge_page(html: str) -> bool:
+    lowered = html.lower()
+    markers = [
+        "just a moment",
+        "challenge-platform",
+        "cf_chl_",
+        "enable javascript and cookies to continue",
+        "cloudflare",
+    ]
+    return any(marker in lowered for marker in markers)
+
+
 def parse_variant_stock_from_json(data: Any) -> dict[str, bool | None]:
     result = {"small": None, "large": None}
 
@@ -69,10 +86,10 @@ def parse_variant_stock_from_json(data: Any) -> dict[str, bool | None]:
                 elif isinstance(value, str):
                     stock_flag = parse_bool_from_text(value)
 
-            if name:
-                if "small" in name and stock_flag is not None:
+            if name and stock_flag is not None:
+                if "small" in name:
                     result["small"] = stock_flag
-                if "large" in name and stock_flag is not None:
+                if "large" in name:
                     result["large"] = stock_flag
 
             for child in node.values():
@@ -85,7 +102,18 @@ def parse_variant_stock_from_json(data: Any) -> dict[str, bool | None]:
     return result
 
 
-def parse_page_stock(html: str) -> StockSnapshot:
+def parse_page_stock(html: str, url: str) -> StockSnapshot:
+    if is_challenge_page(html):
+        return StockSnapshot(
+            checked_at=now_iso(),
+            url=url,
+            page_in_stock=None,
+            small_in_stock=None,
+            large_in_stock=None,
+            blocked=True,
+            raw_labels=["cloudflare challenge page detected"],
+        )
+
     soup = BeautifulSoup(html, "html.parser")
 
     small_status: bool | None = None
@@ -104,20 +132,19 @@ def parse_page_stock(html: str) -> StockSnapshot:
             continue
 
         variant_status = parse_variant_stock_from_json(payload)
-        small_status = variant_status["small"] if small_status is None else small_status
-        large_status = variant_status["large"] if large_status is None else large_status
+        if small_status is None:
+            small_status = variant_status["small"]
+        if large_status is None:
+            large_status = variant_status["large"]
 
-        page_flag = parse_variant_stock_from_json(payload)
-        if page_status is None and any(v is not None for v in page_flag.values()):
-            any_true = any(v is True for v in page_flag.values())
-            any_false = any(v is False for v in page_flag.values())
-            if any_true:
+        if page_status is None and any(v is not None for v in variant_status.values()):
+            if any(v is True for v in variant_status.values()):
                 page_status = True
-            elif any_false:
+            elif all(v is False for v in variant_status.values() if v is not None):
                 page_status = False
 
     candidate_texts: list[str] = []
-    for element in soup.find_all(["button", "span", "div", "p", "label", "option"]):
+    for element in soup.find_all(["button", "span", "div", "p", "label", "option", "li"]):
         text = element.get_text(" ", strip=True)
         normalized = normalize_text(text)
         if not normalized:
@@ -125,13 +152,18 @@ def parse_page_stock(html: str) -> StockSnapshot:
         if any(keyword in normalized for keyword in ["stock", "sold out", "out of stock", "available", "add to cart", "notify me", "small", "large"]):
             candidate_texts.append(normalized)
 
-    labels.extend(sorted(set(candidate_texts))[:100])
+    deduped = []
+    for item in candidate_texts:
+        if item not in deduped:
+            deduped.append(item)
+    labels.extend(deduped[:100])
 
-    for text in candidate_texts:
-        if "small" in text and small_status is None:
-            small_status = parse_bool_from_text(text)
-        if "large" in text and large_status is None:
-            large_status = parse_bool_from_text(text)
+    for text in deduped:
+        compact = normalize_text(text)
+        if "small" in compact and small_status is None:
+            small_status = parse_bool_from_text(compact)
+        if "large" in compact and large_status is None:
+            large_status = parse_bool_from_text(compact)
 
     page_text = normalize_text(soup.get_text(" ", strip=True))
     if page_status is None:
@@ -145,10 +177,11 @@ def parse_page_stock(html: str) -> StockSnapshot:
 
     return StockSnapshot(
         checked_at=now_iso(),
-        url=DEFAULT_URL,
+        url=url,
         page_in_stock=page_status,
         small_in_stock=small_status,
         large_in_stock=large_status,
+        blocked=False,
         raw_labels=labels,
     )
 
@@ -158,6 +191,7 @@ def load_previous_state(state_file: Path) -> StockSnapshot | None:
         return None
     try:
         data = json.loads(state_file.read_text(encoding="utf-8"))
+        data.setdefault("blocked", False)
         return StockSnapshot(**data)
     except Exception:
         return None
@@ -174,6 +208,7 @@ def snapshot_changed(previous: StockSnapshot | None, current: StockSnapshot) -> 
         previous.page_in_stock != current.page_in_stock
         or previous.small_in_stock != current.small_in_stock
         or previous.large_in_stock != current.large_in_stock
+        or previous.blocked != current.blocked
     )
 
 
@@ -187,11 +222,15 @@ def notify(message: str, webhook_url: str | None) -> None:
 
 
 def fetch_html(url: str, timeout: int = 15) -> str:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": DEFAULT_USER_AGENT,
         "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8",
-    }
-    response = requests.get(url, headers=headers, timeout=timeout)
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    })
+    response = session.get(url, timeout=timeout)
     response.raise_for_status()
     return response.text
 
@@ -204,6 +243,9 @@ def pretty_state(snapshot: StockSnapshot) -> str:
             return "OUT_OF_STOCK"
         return "UNKNOWN"
 
+    if snapshot.blocked:
+        return f"[{snapshot.checked_at}] BLOCKED_BY_ANTIBOT | url={snapshot.url}"
+
     return (
         f"[{snapshot.checked_at}] page={fmt(snapshot.page_in_stock)} | "
         f"small={fmt(snapshot.small_in_stock)} | large={fmt(snapshot.large_in_stock)}"
@@ -212,13 +254,15 @@ def pretty_state(snapshot: StockSnapshot) -> str:
 
 def run_once(url: str, state_file: Path, webhook_url: str | None, always_notify: bool) -> None:
     html = fetch_html(url)
-    current = parse_page_stock(html)
-    current.url = url
+    current = parse_page_stock(html, url)
 
     previous = load_previous_state(state_file)
     changed = snapshot_changed(previous, current)
 
-    if changed or always_notify:
+    if current.blocked:
+        prefix = "[BLOCKED]"
+        notify(f"{prefix} {pretty_state(current)}", webhook_url if always_notify else None)
+    elif changed or always_notify:
         prefix = "[CHANGE]" if changed else "[CHECK]"
         notify(f"{prefix} {pretty_state(current)}", webhook_url)
     else:
@@ -228,7 +272,7 @@ def run_once(url: str, state_file: Path, webhook_url: str | None, always_notify:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Monitor Jellycat Aubergine stock (small/large).")
+    parser = argparse.ArgumentParser(description="Monitor Jellycat Amuseables Aubergine stock.")
     parser.add_argument("--url", default=DEFAULT_URL, help="Product URL")
     parser.add_argument("--interval", type=int, default=300, help="Polling interval in seconds")
     parser.add_argument("--state-file", default=DEFAULT_STATE_FILE, help="Path to local state JSON")
