@@ -1,0 +1,7 @@
+{
+  "url": "https://jellycat.com/vivacious-vegetable-aubergine/",
+  "interval": 300,
+  "state_file": ".jellycat_aubergine_state.json",
+  "webhook_url": "",
+  "always_notify": false
+}

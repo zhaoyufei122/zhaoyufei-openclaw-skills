@@ -5,6 +5,7 @@ Custom OpenClaw skills for personal assistant workflows.
 ## Included skills
 
 - `mail-monitor` — IMAP-based inbox reading and triage for Gmail and 163 mail.
+- `monitor-page` — page-based stock monitoring for product pages such as Jellycat listings.
 
 ## Install
 
