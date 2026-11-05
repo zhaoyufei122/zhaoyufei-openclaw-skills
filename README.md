@@ -6,6 +6,7 @@ Custom OpenClaw skills for personal assistant workflows.
 
 - `mail-monitor` — IMAP-based inbox reading and triage for Gmail and 163 mail.
 - `monitor-amuseables-aubergine` — Jellycat Amuseables Aubergine stock monitoring skill.
+- `rigorous-method-improvement` — research-method improvement skill distilled from ScientistTwo habits.
 
 ## Install
 
